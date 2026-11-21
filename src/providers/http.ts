@@ -14,17 +14,17 @@ export class HttpQobuzProvider implements QobuzProvider {
     if (!config.apiBaseUrl || !config.searchPath || !config.streamPath) throw new Error('HTTP provider requires QOBUZ_API_BASE_URL, QOBUZ_SEARCH_PATH, and QOBUZ_STREAM_PATH');
   }
 
-  async search(query: string, quality: Quality, atmos: string): Promise<QobuzTrack[]> {
-    const body = await this.request(this.config.searchPath!, { q: query, quality, atmos });
+  async search(query: string, quality: Quality, atmos?: string): Promise<QobuzTrack[]> {
+    const body = await this.request(this.config.searchPath!, { q: query, quality, ...(atmos ? { atmos } : {}) });
     const raw = Array.isArray(body) ? body : (body as { tracks?: unknown }).tracks;
     if (!Array.isArray(raw)) throw new UpstreamError(502, 'provider search response is malformed');
     return raw.filter(isTrack);
   }
 
-  async getStream(trackId: string, quality: Quality, atmos: string): Promise<QobuzStream | null> {
-    const cleanId = trackId.includes(':') ? trackId.slice(trackId.lastIndexOf(':') + 1) : trackId;
-    const path = this.config.streamPath!.replace('{id}', encodeURIComponent(cleanId));
-    const body = await this.request(path, { quality, atmos });
+  async getStream(trackId: string, quality: Quality, atmos?: string): Promise<QobuzStream | null> {
+    if (!trackId || trackId === '.' || trackId === '..') return null;
+    const path = this.config.streamPath!.replace('{id}', encodeURIComponent(trackId));
+    const body = await this.request(path, { quality, ...(atmos ? { atmos } : {}) });
     return isStream(body) ? body : null;
   }
 

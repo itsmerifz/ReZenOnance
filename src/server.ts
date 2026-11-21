@@ -1,15 +1,15 @@
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { Readable } from 'node:stream';
-import Fastify from 'fastify';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import { loadConfig, type Config } from './config.js';
 import { homePage, legacyTvPage } from './home.js';
 import { TtlCache } from './cache.js';
 import { AppError, badRequest, notFound } from './errors.js';
-import { normalizeTrack, streamResponse, upstreamIdFromPublicId } from './normalize.js';
-import { createProvider, createSourceProvider, type IsolatedSource } from './providers/index.js';
+import { MAX_PUBLIC_ID_LENGTH, normalizeTrack, streamResponse, upstreamIdFromPublicId } from './normalize.js';
+import { createProvider, createSourceProvider } from './providers/index.js';
+import { createProtectedBitChordAddon } from './bitchord.js';
 import { RacingProvider } from './providers/racing.js';
 import { RemoteAddonProvider } from './providers/remote-addon.js';
 import {
@@ -36,9 +36,15 @@ import { AddonDatabase } from './db.js';
 import type { QobuzProvider, Quality, PublicTrack } from './types.js';
 
 const config = loadConfig();
-const app = Fastify({ logger: { redact: ['req.headers.authorization', 'req.headers.cookie', '*.url'] } });
+const app = Fastify({
+  routerOptions: { maxParamLength: MAX_PUBLIC_ID_LENGTH },
+  logger: { redact: ['req.headers.authorization', 'req.headers.cookie', '*.url'] },
+});
 const db = new AddonDatabase(config);
 const racingEngine = createProvider(config);
+const protectedAddon = config.bitChordAuth
+  ? createProtectedBitChordAddon(config.bitChordAuth, config.requestTimeoutMs)
+  : undefined;
 
 // Hydrate dynamic provider settings from Supabase if configured
 if (db.isConfigured && 'getSources' in (racingEngine as any)) {
@@ -87,7 +93,8 @@ app.addHook('onRequest', async (request, reply) => {
 });
 
 const manifests = {
-  root: { id: 'com.bitchord.qobuz', name: 'Qobuz', version: '1.0.0' },
+  root: { id: 'com.bitchord.qobuz', name: 'ReZenOnance', version: '1.0.0' },
+  bitchord: { id: 'com.bitchord.qobuz.bitchord', name: 'ReZenOnance (BitChord Android)', version: '1.0.0' },
   qobuzdl: { id: 'com.bitchord.qobuz.qobuzdl', name: 'Legacy Source', version: '1.0.0' },
   lastbabe: { id: 'com.bitchord.qobuz.lastbabe', name: 'LastBabe Source', version: '1.0.0' },
   monochrome: { id: 'com.bitchord.qobuz.monochrome', name: 'Monochrome Lossless', version: '1.0.0' },
@@ -633,147 +640,225 @@ app.delete<{ Params: { id: string } }>(
   }
 );
 
-registerAddon('', racingEngine, manifests.root);
-registerAddon('/u/:userSlug', racingEngine, manifests.root);
-registerAddon('/a', createSourceProvider(config, 'qobuzdl'), manifests.qobuzdl);
-registerAddon('/b', createSourceProvider(config, 'lastbabe'), manifests.lastbabe);
-registerAddon('/c', createSourceProvider(config, 'monochrome'), manifests.monochrome);
-registerAddon('/d', createSourceProvider(config, 'deezer'), manifests.deezer);
-registerAddon('/e', createSourceProvider(config, 'eljohnzc'), manifests.eljohnzc);
-registerAddon('/f', createSourceProvider(config, 'instable'), manifests.instable);
+const losslessQuality = { label: 'Lossless (best available)', value: 'lossless' };
+const standardQualities = [losslessQuality, { label: 'High (lossy)', value: 'high' }];
+const allQualities = [...standardQualities, { label: 'Low', value: 'low' }];
+const rootQualities = config.provider === 'http' ? allQualities : standardQualities;
 
-function registerAddon(prefix: string, provider: QobuzProvider, manifest: { id: string; name: string; version: string }): void {
+registerAddon('', racingEngine, manifests.root, rootQualities);
+registerAddon('/u/:userSlug', racingEngine, manifests.root, rootQualities);
+registerAddon('/a', createSourceProvider(config, 'qobuzdl'), manifests.qobuzdl, standardQualities);
+registerAddon('/b', createSourceProvider(config, 'lastbabe'), manifests.lastbabe, allQualities);
+registerAddon('/c', createSourceProvider(config, 'monochrome'), manifests.monochrome, [losslessQuality]);
+registerAddon('/d', createSourceProvider(config, 'deezer'), manifests.deezer, allQualities);
+registerAddon('/e', createSourceProvider(config, 'eljohnzc'), manifests.eljohnzc, allQualities);
+registerAddon('/f', createSourceProvider(config, 'instable'), manifests.instable, standardQualities);
+if (protectedAddon) {
+  registerAddon('/bitchord', racingEngine, manifests.bitchord, rootQualities, protectedAddon);
+  registerAddon('/bitchord/u/:userSlug', racingEngine, manifests.bitchord, rootQualities, protectedAddon);
+}
+
+type TrackParams = { id: string; userSlug?: string };
+type PlaybackQuery = { quality?: string; atmos?: string };
+
+function registerAddon(
+  prefix: string,
+  provider: QobuzProvider,
+  manifest: { id: string; name: string; version: string },
+  qualityOptions: typeof standardQualities,
+  secure?: ReturnType<typeof createProtectedBitChordAddon>,
+): void {
   const searchCache = new TtlCache<PublicTrack[]>(config.cacheTtlMs);
-  const route = (pathStr: string): string => `${prefix}${pathStr}` || '/';
+  const personal = prefix.includes(':userSlug');
+  const authOptions = secure ? { preHandler: secure.authenticate } : {};
+  const route = (suffix: string) => prefix + suffix;
+  const audioPath = ({ id, userSlug }: TrackParams) => {
+    const base = userSlug ? prefix.replace(':userSlug', () => encodeURIComponent(userSlug)) : prefix;
+    return base + '/stream/' + encodeURIComponent(id) + '/audio';
+  };
 
-  app.get(route('/manifest.json'), async (_request, reply) => reply.header('Cache-Control', 'public, max-age=3600, s-maxage=86400').send({
-    ...manifest, resources: ['search', 'stream'], allowDownloads: 0,
-    settings: [{ key: 'quality', type: 'select', default: 'lossless', options: [
-      { label: 'Lossless', value: 'lossless' }, { label: 'High', value: 'high' }, { label: 'Low', value: 'low' },
-    ] }],
-  }));
+  app.get(route('/manifest.json'), async (_request, reply) => {
+    reply.header('Cache-Control', (personal ? 'private' : 'public') + ', max-age=600');
+    return {
+      ...manifest,
+      resources: ['search', 'stream'],
+      allowDownloads: 0,
+      checkValidLossless: 0,
+      ...(secure ? { bitchordAuth: true } : {}),
+      settings: [{ key: 'quality', type: 'select', default: 'lossless', options: qualityOptions }],
+    };
+  });
 
-  app.get<{ Querystring: { q?: string; quality?: string; atmos?: string } }>(route('/search'), async (request, reply) => {
+  app.get<{ Querystring: PlaybackQuery & { q?: string } }>(route('/search'), authOptions, async (request, reply) => {
     totalSearchesServed++;
-    const query = request.query.q?.trim();
+    const query = typeof request.query.q === 'string' ? request.query.q.trim() : '';
     if (!query) throw badRequest('q is required');
     const quality = parseQuality(request.query.quality);
-    const atmos = request.query.atmos ?? 'auto';
-    const key = `${query}\u0000${quality}\u0000${atmos}`;
+    const atmos = parseAtmos(request.query.atmos);
+    const key = [query, quality, atmos ?? ''].join('\u0000');
+    const cacheControl = personal || secure ? 'no-store' : 'public, max-age=30, s-maxage=300, stale-while-revalidate=600';
     const cached = searchCache.get(key);
-    if (cached) return reply.header('Cache-Control', 'public, max-age=30, s-maxage=300, stale-while-revalidate=600').send({ tracks: cached });
+    if (cached) return reply.header('Cache-Control', cacheControl).send({ tracks: cached });
     try {
       const tracks = (await provider.search(query, quality, atmos)).flatMap(track => {
         try { return [normalizeTrack(track, config.idSecret)]; } catch { return []; }
       });
       searchCache.set(key, tracks);
-      return reply.header('Cache-Control', 'public, max-age=30, s-maxage=300, stale-while-revalidate=600').send({ tracks });
+      return reply.header('Cache-Control', cacheControl).send({ tracks });
     } catch (error) {
       const stale = searchCache.getStale(key);
-      if (stale) return reply.header('Cache-Control', 'public, max-age=10, s-maxage=30, stale-while-revalidate=120').send({ tracks: stale, stale: true });
-      throw error;
+      if (!stale) throw error;
+      const staleCache = personal || secure ? 'no-store' : 'public, max-age=10, s-maxage=30, stale-while-revalidate=120';
+      return reply.header('Cache-Control', staleCache).send({ tracks: stale, stale: true });
     }
   });
 
-  app.get<{ Params: { id: string; userSlug?: string }; Querystring: { quality?: string; atmos?: string; audio?: string } }>(route('/stream/:id'), async (request, reply) => {
-    totalStreamsServed++;
-    if (request.params.userSlug) {
-      const clientIp = (request.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || request.ip;
-      const userAgent = request.headers['user-agent'] || 'unknown';
-      const access = await db.recordStreamAccess(request.params.userSlug, clientIp, userAgent);
-      if (!access.allowed) {
-        return reply.code(429).send({ error: access.reason || 'Playback quota exceeded' });
+  app.get<{ Params: TrackParams; Querystring: PlaybackQuery & { audio?: string } }>(
+    route('/stream/:id'), authOptions, async (request, reply) => {
+      reply.header('Cache-Control', 'no-store');
+      const quality = parseQuality(request.query.quality);
+      const atmos = parseAtmos(request.query.atmos);
+      const upstreamId = upstreamIdFromPublicId(request.params.id, config.idSecret);
+      if (!upstreamId) throw notFound('track not found');
+
+      if (!secure && (request.query.audio === '1' || request.query.audio === 'true')) {
+        const params = new URLSearchParams({ quality, ...(atmos ? { atmos } : {}) });
+        return reply.code(302).redirect(audioPath(request.params) + '?' + params);
       }
-    }
-    const quality = parseQuality(request.query.quality);
-    const atmos = request.query.atmos ?? 'auto';
-    const id = request.params.id;
-    if (!/^qobuz_[A-Za-z0-9_-]{10,512}$/.test(id)) throw notFound('track not found');
+      if (!(await allowStreamAccess(request, reply))) return;
+      totalStreamsServed++;
+      const stream = await resolveStream(upstreamId, quality, atmos);
+      if (secure) {
+        return { ...stream, url: secure.mediaUrl(audioPath(request.params), quality, atmos) };
+      }
+      return stream;
+    },
+  );
 
-    if (request.query.audio === '1' || request.query.audio === 'true') {
-      const targetAudio = route(`/stream/${encodeURIComponent(id)}/audio?quality=${encodeURIComponent(quality)}&atmos=${encodeURIComponent(atmos)}`);
-      return reply.code(302).redirect(targetAudio);
-    }
+  app.route<{ Params: TrackParams; Querystring: PlaybackQuery & { exp?: string; sig?: string } }>({
+    method: ['GET', 'HEAD'],
+    url: route('/stream/:id/audio'),
+    async handler(request, reply) {
+      reply.header('Cache-Control', 'no-store');
+      const quality = parseQuality(request.query.quality);
+      const atmos = parseAtmos(request.query.atmos);
+      const { exp, sig } = request.query;
+      const upstreamId = upstreamIdFromPublicId(request.params.id, config.idSecret);
+      if (!upstreamId) throw notFound('track not found');
 
-    const upstreamId = upstreamIdFromPublicId(id, config.idSecret);
-    if (!upstreamId) throw notFound('track not available');
+      if (secure) {
+        if (!secure.allowsMedia(audioPath(request.params), quality, atmos, exp, sig)) {
+          return reply.code(403).send({ error: 'Media link is invalid or expired' });
+        }
+        const slug = request.params.userSlug;
+        if (slug && (await db.getAddonBySlug(slug))?.is_revoked) {
+          return reply.code(403).send({ error: 'This personal addon link has been revoked by administration.' });
+        }
+      } else {
+        if (!(await allowStreamAccess(request, reply))) return;
+        totalStreamsServed++;
+      }
+
+      const stream = await resolveStream(upstreamId, quality, atmos);
+      return proxyAudio(request, reply, stream.url, stream.format);
+    },
+  });
+
+  async function resolveStream(upstreamId: string, quality: Quality, atmos?: string) {
     const stream = await provider.getStream(upstreamId, quality, atmos);
     if (!stream) throw notFound('track not available');
-    try { return reply.send(streamResponse(stream, quality)); } catch { throw notFound('track has no playable rendition'); }
-  });
+    let playable: ReturnType<typeof streamResponse>;
+    try { playable = streamResponse(stream); } catch { throw notFound('track has no playable rendition'); }
+    if (secure && playable.manifest !== 'none') throw notFound('the protected addon requires a direct audio rendition');
+    return playable;
+  }
+}
 
-  app.get<{ Params: { id: string; userSlug?: string }; Querystring: { quality?: string; atmos?: string } }>(route('/stream/:id/audio'), async (request, reply) => {
-    totalStreamsServed++;
-    if (request.params.userSlug) {
-      const clientIp = (request.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || request.ip;
-      const userAgent = request.headers['user-agent'] || 'unknown';
-      const access = await db.recordStreamAccess(request.params.userSlug, clientIp, userAgent);
-      if (!access.allowed) {
-        return reply.code(429).send({ error: access.reason || 'Playback quota exceeded' });
-      }
+async function allowStreamAccess(request: FastifyRequest<{ Params: TrackParams }>, reply: FastifyReply): Promise<boolean> {
+  const slug = request.params.userSlug;
+  if (!slug) return true;
+  const forwardedFor = request.headers['x-forwarded-for'];
+  const clientIp = typeof forwardedFor === 'string' ? forwardedFor.split(',')[0].trim() : request.ip;
+  const access = await db.recordStreamAccess(slug, clientIp || request.ip, request.headers['user-agent'] || 'unknown');
+  if (access.allowed) return true;
+  if (access.retryAfterSeconds !== undefined) {
+    reply.code(429).header('Retry-After', access.retryAfterSeconds).send({ error: access.reason });
+  } else {
+    reply.code(403).send({ error: access.reason });
+  }
+  return false;
+}
+
+async function proxyAudio(request: FastifyRequest, reply: FastifyReply, url: string, format?: string) {
+  const headers: Record<string, string> = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+    Accept: '*/*',
+    'Accept-Encoding': 'identity',
+  };
+  const host = new URL(url).hostname;
+  if (host === 'monochrome.st' || host.endsWith('.monochrome.st')) {
+    headers.Referer = 'https://monochrome.st/';
+    headers.Origin = 'https://monochrome.st';
+  }
+  if (request.headers.range) headers.Range = request.headers.range;
+
+  let upstream: Response;
+  const controller = new AbortController();
+  const headerTimeout = setTimeout(() => controller.abort(), 20_000);
+  reply.raw.once('close', () => controller.abort());
+  try {
+    upstream = await fetch(url, { method: request.method, headers, signal: controller.signal });
+  } catch {
+    throw new AppError(502, 'upstream audio unavailable');
+  } finally {
+    clearTimeout(headerTimeout);
+  }
+  if (!upstream.ok) {
+    await upstream.body?.cancel().catch(() => {});
+    if (upstream.status === 404 || upstream.status === 410) throw notFound('audio not available');
+    if (upstream.status === 429) {
+      reply.header('Retry-After', upstream.headers.get('retry-after') ?? '60');
+      return reply.code(429).send({ error: 'upstream audio is rate limited' });
     }
-    const quality = parseQuality(request.query.quality);
-    const atmos = request.query.atmos ?? 'auto';
-    const id = request.params.id;
-    if (!/^qobuz_[A-Za-z0-9_-]{10,512}$/.test(id)) throw notFound('track not found');
-    const upstreamId = upstreamIdFromPublicId(id, config.idSecret);
-    if (!upstreamId) throw notFound('track not available');
-    const stream = await provider.getStream(upstreamId, quality, atmos);
-    if (!stream || !stream.url) throw notFound('track has no playable rendition');
-
-    const upstreamHeaders: Record<string, string> = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
-      'Accept': '*/*',
-    };
-    if (stream.url.includes('monochrome.st')) {
-      upstreamHeaders['Referer'] = 'https://monochrome.st/';
-      upstreamHeaders['Origin'] = 'https://monochrome.st';
+    if (upstream.status === 416) {
+      const range = upstream.headers.get('content-range');
+      if (range) reply.header('Content-Range', range);
+      return reply.code(416).send({ error: 'requested range is not available' });
     }
-    if (request.headers.range) {
-      upstreamHeaders['Range'] = request.headers.range;
-    }
+    throw new AppError(502, 'upstream audio unavailable');
+  }
 
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 20000);
-      const upstreamRes = await fetch(stream.url, {
-        headers: upstreamHeaders,
-        signal: controller.signal,
-      }).finally(() => clearTimeout(timeout));
-
-      if (!upstreamRes.ok && upstreamRes.status !== 206) {
-        throw notFound(`upstream audio returned HTTP ${upstreamRes.status}`);
-      }
-
-      reply.code(upstreamRes.status);
-      const contentType = stream.format === 'flac' ? 'audio/flac' : (upstreamRes.headers.get('content-type') || 'audio/flac');
-      reply.header('Content-Type', contentType);
-      reply.header('Accept-Ranges', 'bytes');
-      reply.header('Access-Control-Allow-Origin', '*');
-      const contentRange = upstreamRes.headers.get('content-range');
-      if (contentRange) reply.header('Content-Range', contentRange);
-      const contentLength = upstreamRes.headers.get('content-length');
-      if (contentLength) reply.header('Content-Length', contentLength);
-
-      return reply.send(Readable.fromWeb(upstreamRes.body as any));
-    } catch (err: any) {
-      if (err instanceof AppError) throw err;
-      throw notFound(err.message || 'failed to stream audio');
-    }
-  });
+  if (request.method !== 'HEAD' && !upstream.body) {
+    throw new AppError(502, 'upstream audio returned an empty response');
+  }
+  reply.code(upstream.status);
+  reply.header('Access-Control-Allow-Origin', '*');
+  const contentType = upstream.headers.get('content-type') ?? (format === 'flac' ? 'audio/flac' : 'application/octet-stream');
+  reply.header('Content-Type', contentType);
+  for (const name of ['accept-ranges', 'content-range', 'content-length']) {
+    const value = upstream.headers.get(name);
+    if (value) reply.header(name, value);
+  }
+  if (request.method === 'HEAD') return reply.send();
+  return reply.send(upstream.body);
 }
 
 app.setErrorHandler((error, _request, reply) => {
-  if (error instanceof AppError) return reply.code(error.statusCode).send({ error: error.message });
   const candidate = error as { statusCode?: unknown; status?: unknown };
   const status = typeof candidate.statusCode === 'number' ? candidate.statusCode : typeof candidate.status === 'number' ? candidate.status : 500;
+  if (status === 429 && !reply.hasHeader('Retry-After')) reply.header('Retry-After', '60');
+  if (error instanceof AppError) return reply.code(error.statusCode).send({ error: error.message });
   return reply.code(status).send({ error: status >= 500 ? 'upstream service unavailable' : 'request failed' });
 });
 
 function parseQuality(value?: string): Quality {
-  const normalized = (value ?? 'LOSSLESS').toUpperCase();
+  const normalized = typeof value === 'string' ? value.trim().toUpperCase() : value === undefined ? 'LOSSLESS' : undefined;
   if (normalized === 'LOSSLESS' || normalized === 'HIGH' || normalized === 'LOW') return normalized;
   throw badRequest('quality must be LOSSLESS, HIGH, or LOW');
+}
+
+function parseAtmos(value?: string): string | undefined {
+  return typeof value === 'string' ? value.trim().toLowerCase() || undefined : undefined;
 }
 
 const isDirectRun = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;

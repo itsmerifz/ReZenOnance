@@ -1041,7 +1041,7 @@ body {
         <div class="feature-card">
           <div class="feature-icon-box">📱</div>
           <div class="feature-title">Universal Compatibility</div>
-          <div class="feature-desc">100% compliant BitChord manifest format. Seamlessly install into BitChord, Mochy, Metrofuse, Symfonium, or Kodi.</div>
+          <div class="feature-desc">Add ReZenOnance to BitChord, Mochy, or Metrofuse using its manifest URL.</div>
         </div>
 
         <div class="feature-card">
@@ -1090,10 +1090,10 @@ body {
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
               <span>Roll New Token</span>
             </button>
-            <a href="bitchord://install-addon?url=" id="bitchord-direct-link" class="chip-btn" style="text-decoration:none;">
-              <span>⚡ BitChord 1-Click Install</span>
-            </a>
           </div>
+          <p style="font-size:13px;color:var(--text-secondary);margin:8px 0 0;">
+            In BitChord, paste the URL into <strong>Settings → Sources → Add an addon</strong>.
+          </p>
 
           <!-- Custom Slug Setter -->
           <div class="slug-customizer-box">
@@ -1294,7 +1294,7 @@ body {
       <button class="modal-close-btn" onclick="closeQrModal()">✕</button>
       <div style="font-size:20px; font-weight:800; color:#fff; margin-bottom:6px;">Scan Addon QR Code</div>
       <p style="font-size:13px; color:var(--text-secondary); margin-bottom:18px;">
-        Point your phone camera or TV scanner to immediately launch BitChord with your personal token.
+        Scan for your manifest URL and paste it into BitChord's Sources settings.
       </p>
       <div id="qr-code-box" style="background:#fff; padding:16px; border-radius:18px; display:inline-block; margin-bottom:14px;"></div>
       <div id="qr-modal-url" style="font-size:11px; font-family:'JetBrains Mono',monospace; color:var(--text-muted); word-break:break-all;"></div>
@@ -1342,15 +1342,13 @@ body {
   var quotaTimer = null;
 
   function getManifestUrl() {
-    return window.location.origin + '/u/' + currentSlug + '/manifest.json';
+    return window.location.origin + '/u/' + encodeURIComponent(currentSlug) + '/manifest.json';
   }
 
   function updateAddonView() {
     var url = getManifestUrl();
     var input = document.getElementById('addon-url');
     if (input) input.value = url;
-    var directLink = document.getElementById('bitchord-direct-link');
-    if (directLink) directLink.href = 'bitchord://install-addon?url=' + encodeURIComponent(url);
     var slugInput = document.getElementById('custom-slug-input');
     if (slugInput && !slugInput.value) slugInput.value = currentSlug;
   }

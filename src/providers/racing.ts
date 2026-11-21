@@ -55,7 +55,7 @@ export class RacingProvider implements QobuzProvider {
     return [...this.sources];
   }
 
-  async search(query: string, quality: Quality, atmos: string): Promise<QobuzTrack[]> {
+  async search(query: string, quality: Quality, atmos?: string): Promise<QobuzTrack[]> {
     const activeSources = this.sources.filter(s => s.enabled !== false);
     if (activeSources.length === 0) return [];
 
@@ -96,23 +96,20 @@ export class RacingProvider implements QobuzProvider {
     });
   }
 
-  async getStream(trackId: string, quality: Quality, atmos: string): Promise<QobuzStream | null> {
+  async getStream(trackId: string, quality: Quality, atmos?: string): Promise<QobuzStream | null> {
     const separator = trackId.indexOf(':');
     if (separator > 0) {
       const sourceName = trackId.slice(0, separator);
       const upstreamId = trackId.slice(separator + 1);
-      const source = this.sources.find(candidate => (candidate.id === sourceName || candidate.name === sourceName));
-      if (source && source.enabled !== false) {
-        const stream = await source.provider.getStream(upstreamId, quality, atmos);
-        if (stream) return stream;
-      }
+      const source = this.sources.find(candidate => candidate.id === sourceName || candidate.name === sourceName);
+      if (!source || source.enabled === false) return null;
+      return source.provider.getStream(upstreamId, quality, atmos);
     }
 
-    // Fallback: Try all enabled providers if prefix was missing or primary provider had no stream
+    // Older IDs without a source prefix still resolve through the enabled providers.
     for (const source of this.sources.filter(s => s.enabled !== false)) {
       try {
-        const cleanId = trackId.includes(':') ? trackId.slice(trackId.lastIndexOf(':') + 1) : trackId;
-        const stream = await source.provider.getStream(cleanId, quality, atmos);
+        const stream = await source.provider.getStream(trackId, quality, atmos);
         if (stream) return stream;
       } catch {
         // Continue fallback attempts

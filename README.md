@@ -2,7 +2,7 @@
 
 > **Universal Studio-Grade Lossless Music Aggregator & Addon Gateway**
 
-**ReZenOnance** aggregates verified high-resolution FLAC streams (up to **24-bit / 192 kHz**) into a unified, high-performance lossless music addon compatible with **Mochy**, **Metrofuse**, **EchoMusic**, and custom players. It operates in a dual-distribution architecture:
+**ReZenOnance** aggregates verified high-resolution FLAC streams (up to **24-bit / 192 kHz**) into a unified, high-performance lossless music addon compatible with **BitChord**, **Mochy**, **Metrofuse**, **EchoMusic**, and custom players. It operates in a dual-distribution architecture:
 
 1. **Hosted Web Portal & Gateway**: A modern, glassmorphic audiophile hub providing live provider health telemetry, an interactive hardware & gear diagnostic lab, an in-browser lossless player with real-time frequency visualizer, and personalized rate-limited addon endpoints (`/u/:userSlug/manifest.json`).
 2. **Standalone Community Release**: A plug-and-play, zero-database, zero-auth Node.js deployment for self-hosters on Docker, Vercel, Railway, or home servers.
@@ -92,8 +92,8 @@ npm install
 # Build TypeScript
 npm run build
 
-# Run unit & integration test suite (20/20 tests)
-npm test
+# Run unit and integration tests with local storage
+DISABLE_SUPABASE=true NODE_ENV=test npm test
 
 # Launch development server
 npm run dev
@@ -147,13 +147,29 @@ UPSTREAM_RETRIES=2
 
 ## 📱 Universal App Compatibility
 
-ReZenOnance provides standard addon manifest endpoints compatible with popular audio players:
-- **Mochy**
-- **Metrofuse**
-- **EchoMusic**
-- Custom players implementing addon manifest protocols
+### Install in BitChord
 
-Users can copy their private addon manifest URL or scan the dynamic QR code directly from the web portal.
+1. Open **Settings → Sources → Add an addon**.
+2. Paste `https://your-host/manifest.json`, or copy your personal URL ending in `/u/<slug>/manifest.json` from the ReZenOnance dashboard.
+3. Run the source check and try a track. In BitChord 1.9.1 or newer, tap the quality shown under the source to change it when the source offers a choice.
+
+The default gateway offers Lossless and High. The lossless-only source at `/c/manifest.json` offers Lossless. The manifests allow streaming on any audio output and exclude the addon from offline downloads.
+
+### Optional BitChord addon auth
+
+Set these environment variables on the server and restart it to enable the Android-only routes.
+
+```dotenv
+APP_BASE_URL=https://audio.example.com
+BITCHORD_AUTH_HOSTS=audio.example.com
+BITCHORD_MEDIA_SECRET=<output of openssl rand -hex 32>
+```
+
+Add `https://audio.example.com/bitchord/manifest.json` or `https://audio.example.com/bitchord/u/<slug>/manifest.json` in the official BitChord Android app (1.9.1 or newer on a supported device). List every hostname users paste in `BITCHORD_AUTH_HOSTS`, separated by commas and without schemes, paths, or ports. Keep the media secret the same across server instances.
+
+The protected routes verify search and stream requests, and serve direct audio through signed links that expire after 30 minutes. Use the standard URLs for HLS or DASH renditions and for other players. BitChord may display “Outdated addon” for a standard URL because addon auth is optional there.
+
+The Android verifier is supplied by the [BitChord addon developer guide](https://bitchord.kushagrasingh.in/docs).
 
 ---
 

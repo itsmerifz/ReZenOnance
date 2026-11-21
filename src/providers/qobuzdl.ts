@@ -8,14 +8,14 @@ type JsonRecord = Record<string, unknown>;
 export class QobuzDlProvider implements QobuzProvider {
   constructor(private readonly config: Config) {}
 
-  async search(query: string, _quality: Quality, _atmos: string): Promise<QobuzTrack[]> {
+  async search(query: string, _quality: Quality): Promise<QobuzTrack[]> {
     const body = await this.request('/api/get-music', { q: query, offset: '0' });
     const data = isRecord(body) && isRecord(body.data) ? body.data : undefined;
     const tracks = data && isRecord(data.tracks) && Array.isArray(data.tracks.items) ? data.tracks.items : [];
     return tracks.filter(isRecord).map(toTrack).filter((track): track is QobuzTrack => track !== null);
   }
 
-  async getStream(trackId: string, quality: Quality, _atmos: string): Promise<QobuzStream | null> {
+  async getStream(trackId: string, quality: Quality): Promise<QobuzStream | null> {
     const cleanId = trackId.includes(':') ? trackId.slice(trackId.lastIndexOf(':') + 1) : trackId;
     if (!/^[A-Za-z0-9_-]+$/.test(cleanId)) return null;
     const body = await this.request('/api/download-music', { track_id: cleanId, quality: qualityId(quality) });
@@ -24,7 +24,7 @@ export class QobuzDlProvider implements QobuzProvider {
     if (!url || !/^https:\/\//i.test(url)) return null;
     // The upstream endpoint returns only a URL. Do not infer codec, bitrate,
     // bit depth, Dolby, or encryption metadata that it did not provide.
-    return { url, manifest: 'none', encrypted: false };
+    return { url };
   }
 
   private async request(path: string, params: Record<string, string>): Promise<unknown> {

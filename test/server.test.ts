@@ -45,7 +45,9 @@ test('GET /manifest.json returns valid BitChord contract', async () => {
   assert.equal(data.id, 'com.bitchord.qobuz');
   assert.deepEqual(data.resources, ['search', 'stream']);
   assert.equal(data.allowDownloads, 0);
-  assert.ok(Array.isArray(data.settings));
+  assert.equal(data.checkValidLossless, 0);
+  assert.equal(data.bitchordAuth, undefined);
+  assert.deepEqual(data.settings[0].options.map(({ value }: { value: string }) => value), ['lossless', 'high']);
 });
 
 test('GET /u/:userSlug/manifest.json returns valid personal gateway manifest', async () => {
@@ -66,6 +68,7 @@ test('Isolated manifests (/a through /f) return valid playback-only manifests', 
     assert.match(data.id, /^com\.bitchord\.qobuz\./);
     assert.deepEqual(data.resources, ['search', 'stream']);
     assert.equal(data.allowDownloads, 0);
+    if (prefix === '/c') assert.deepEqual(data.settings[0].options.map(({ value }: { value: string }) => value), ['lossless']);
   }
 });
 

@@ -28,6 +28,23 @@ test('drops non-absolute artwork URLs', () => {
 });
 
 test('rejects encrypted or non-HTTPS streams', () => {
-  assert.throws(() => streamResponse({ url: 'https://cdn.example/a.flac', encrypted: true }, 'LOSSLESS'));
-  assert.throws(() => streamResponse({ url: 'http://cdn.example/a.flac' }, 'LOSSLESS'));
+  assert.throws(() => streamResponse({ url: 'https://cdn.example/a.flac', encrypted: true }));
+  assert.throws(() => streamResponse({ url: 'http://cdn.example/a.flac' }));
+  assert.throws(() => streamResponse({ url: 'https://?stream=invalid' }));
+});
+
+test('describes codec and transport without substituting the requested quality', () => {
+  const flac = streamResponse({ url: 'https://cdn.example/stream', format: 'FLAC' });
+  assert.equal(flac.codec, 'flac');
+  assert.equal(flac.container, 'flac');
+  assert.equal(flac.manifest, 'none');
+  assert.equal(flac.quality, undefined);
+
+  const hls = streamResponse({ url: 'https://cdn.example/list?id=123', format: 'hls', codec: 'AAC' });
+  assert.equal(hls.manifest, 'hls');
+  assert.equal(hls.codec, 'aac');
+  assert.equal(hls.container, undefined);
+
+  const dash = streamResponse({ url: 'https://cdn.example/manifest.mpd?sig=test' });
+  assert.equal(dash.manifest, 'dash');
 });

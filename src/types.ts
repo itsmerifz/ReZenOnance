@@ -9,6 +9,7 @@ export interface QobuzTrack {
   artworkURL?: string;
   format?: string;
   audioQuality?: string;
+  audioMode?: string;
   audioModes?: string[];
   atmos?: boolean;
 }
@@ -28,8 +29,8 @@ export interface QobuzStream {
 }
 
 export interface QobuzProvider {
-  search(query: string, quality: Quality, atmos: string): Promise<QobuzTrack[]>;
-  getStream(trackId: string, quality: Quality, atmos: string): Promise<QobuzStream | null>;
+  search(query: string, quality: Quality, atmos?: string): Promise<QobuzTrack[]>;
+  getStream(trackId: string, quality: Quality, atmos?: string): Promise<QobuzStream | null>;
 }
 
 export interface PublicTrack extends Omit<QobuzTrack, 'upstreamId'> {
