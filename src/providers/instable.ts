@@ -7,24 +7,26 @@ type RecordValue = Record<string, unknown>;
 export class InstableProvider implements QobuzProvider {
   constructor(private readonly config: Config) {}
 
-  async search(query: string, _quality: Quality, _atmos: string): Promise<QobuzTrack[]> {
+  async search(query: string, _quality: Quality): Promise<QobuzTrack[]> {
     const body = await this.request('/api/search', { q: query });
     const data = isRecord(body) && isRecord(body.data) ? body.data : undefined;
     const items = data && isRecord(data.tracks) && Array.isArray(data.tracks.items) ? data.tracks.items : [];
     return items.filter(isRecord).map(toTrack).filter((track): track is QobuzTrack => track !== null);
   }
 
-  async getStream(trackId: string, quality: Quality, _atmos: string): Promise<QobuzStream | null> {
+  async getStream(trackId: string, quality: Quality): Promise<QobuzStream | null> {
     const cleanId = trackId.includes(':') ? trackId.slice(trackId.lastIndexOf(':') + 1) : trackId;
     if (!/^[A-Za-z0-9_-]+$/.test(cleanId)) return null;
     const body = await this.request(`/api/player/stream/${encodeURIComponent(cleanId)}`, { quality: qualityId(quality) });
     if (!isRecord(body) || typeof body.url !== 'string' || !/^https:\/\//i.test(body.url)) return null;
     return {
       url: body.url,
-      format: mimeFormat(body.mimeType) ?? 'flac',
-      quality: typeof body.quality === 'number' ? String(body.quality) : quality,
-      manifest: 'none',
+      format: mimeFormat(body.mimeType),
+      quality: typeof body.quality === 'string' ? body.quality : undefined,
       encrypted: false,
+      sampleRate: typeof body.sampleRate === 'number' ? body.sampleRate : undefined,
+      bitDepth: typeof body.bitDepth === 'number' ? body.bitDepth : undefined,
+      bitrate: typeof body.bitrate === 'number' ? body.bitrate : undefined,
     };
   }
 
@@ -91,7 +93,20 @@ function toTrack(raw: RecordValue): QobuzTrack | null {
 }
 
 function qualityId(quality: Quality): string { return quality === 'LOSSLESS' ? '27' : '5'; }
-function mimeFormat(value: unknown): string | undefined { return typeof value === 'string' ? value.split('/').pop() : undefined; }
+function mimeFormat(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  switch (value.split(';', 1)[0].trim().toLowerCase()) {
+    case 'audio/flac':
+    case 'audio/x-flac': return 'flac';
+    case 'audio/mpeg': return 'mp3';
+    case 'audio/aac': return 'aac';
+    case 'audio/mp4': return 'mp4';
+    case 'application/dash+xml': return 'dash';
+    case 'application/vnd.apple.mpegurl':
+    case 'application/x-mpegurl': return 'hls';
+    default: return undefined;
+  }
+}
 function isRecord(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null; }
 function retryable(status: number): boolean { return status === 408 || status === 425 || status === 429 || status >= 500; }
 function delay(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)); }

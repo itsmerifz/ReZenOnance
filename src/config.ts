@@ -23,6 +23,7 @@ export interface Config {
   discordClientId?: string;
   discordClientSecret?: string;
   appBaseUrl?: string;
+  bitChordAuth?: { hosts: string[]; publicBaseUrl: string; mediaSecret: string };
 }
 
 const positiveInt = (name: string, fallback: number): number => {
@@ -38,13 +39,31 @@ export function loadConfig(): Config {
   if (provider === 'http' && (!apiBaseUrl || !/^https:\/\//i.test(apiBaseUrl))) {
     throw new Error('QOBUZ_API_BASE_URL must be an HTTPS URL when QOBUZ_PROVIDER=http');
   }
+  const appBaseUrl = process.env.APP_BASE_URL;
+  const idSecret = process.env.QOBUZ_ID_SECRET;
+  const bitChordHosts = (process.env.BITCHORD_AUTH_HOSTS ?? '').split(',').map(host => host.trim().toLowerCase()).filter(Boolean);
+  let bitChordAuth: Config['bitChordAuth'];
+  if (bitChordHosts.length > 0) {
+    const url = appBaseUrl && URL.canParse(appBaseUrl) ? new URL(appBaseUrl) : undefined;
+    if (!url || url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+      throw new Error('BitChord addon auth requires an HTTPS APP_BASE_URL without credentials, a query, or a fragment');
+    }
+    if (bitChordHosts.some(host => !/^[a-z0-9]+(?:[a-z0-9.-]*[a-z0-9])?$/.test(host))) {
+      throw new Error('BITCHORD_AUTH_HOSTS must contain hostnames without a scheme, port, or path');
+    }
+    const mediaSecret = process.env.BITCHORD_MEDIA_SECRET?.trim();
+    if (!mediaSecret || mediaSecret.length < 32) {
+      throw new Error('BitChord addon auth requires a BITCHORD_MEDIA_SECRET of at least 32 characters');
+    }
+    bitChordAuth = { hosts: bitChordHosts, publicBaseUrl: url.toString().replace(/\/+$/, ''), mediaSecret };
+  }
   return {
     host: process.env.HOST ?? '0.0.0.0',
     port: positiveInt('PORT', Number(process.env.SERVER_PORT) || 3000),
     requestTimeoutMs: positiveInt('REQUEST_TIMEOUT_MS', 6000),
     upstreamRetries: positiveInt('UPSTREAM_RETRIES', 1),
     cacheTtlMs: positiveInt('CACHE_TTL_SECONDS', 300) * 1000,
-    idSecret: process.env.QOBUZ_ID_SECRET ?? 'qobuz-bitchord-id-secret-v1',
+    idSecret: idSecret ?? 'qobuz-bitchord-id-secret-v1',
     provider,
     apiBaseUrl,
     searchPath: process.env.QOBUZ_SEARCH_PATH,
@@ -62,6 +81,7 @@ export function loadConfig(): Config {
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET,
     discordClientId: process.env.DISCORD_CLIENT_ID,
     discordClientSecret: process.env.DISCORD_CLIENT_SECRET,
-    appBaseUrl: process.env.APP_BASE_URL,
+    appBaseUrl,
+    bitChordAuth,
   };
 }

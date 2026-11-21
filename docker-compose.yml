@@ -15,6 +15,9 @@ services:
       - HEISENBERG_BASE_URL=https://heisenbergbackaaahh.de.deplexo.com/a
       - INSTABLE_BASE_URL=https://arcod.xyz
       - QOBUZ_ID_SECRET=rezen-self-host-secret-token-change-this
+      - APP_BASE_URL=${APP_BASE_URL:-}
+      - BITCHORD_AUTH_HOSTS=${BITCHORD_AUTH_HOSTS:-}
+      - BITCHORD_MEDIA_SECRET=${BITCHORD_MEDIA_SECRET:-}
       - REQUEST_TIMEOUT_MS=10000
       - CACHE_TTL_MS=300000
       - UPSTREAM_RETRIES=2

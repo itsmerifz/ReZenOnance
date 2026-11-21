@@ -6,10 +6,11 @@
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
+    "allowJs": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "src/bitchord-addon-auth.mjs"]
 }

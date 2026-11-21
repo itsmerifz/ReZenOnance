@@ -398,8 +398,13 @@ export class AddonDatabase {
   }
 
   // Intercept stream execution: verify quota, register device lease & ip
-  async recordStreamAccess(slug: string, clientIp: string, userAgent: string): Promise<{ allowed: boolean; reason?: string }> {
-    const today = new Date().toISOString().split('T')[0];
+  async recordStreamAccess(slug: string, clientIp: string, userAgent: string): Promise<
+    { allowed: true } | { allowed: false; reason: string; retryAfterSeconds?: number }
+  > {
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+    const nextUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+    const retryAfterDailyReset = Math.ceil((nextUtc - now.getTime()) / 1000);
     const addon = await this.getAddonBySlug(slug);
     if (!addon) return { allowed: true }; // Allow root/legacy queries if not in db
 
@@ -424,6 +429,7 @@ export class AddonDatabase {
           return {
             allowed: false,
             reason: `Daily stream quota exceeded (${addon.daily_limit} tracks). Resets at 00:00 UTC.`,
+            retryAfterSeconds: retryAfterDailyReset,
           };
         }
 
@@ -441,6 +447,7 @@ export class AddonDatabase {
             return {
               allowed: false,
               reason: 'Daily IP diversity cap exceeded (Max 15 distinct IPs per 24 hours). Resets at 00:00 UTC.',
+              retryAfterSeconds: retryAfterDailyReset,
             };
           }
           await this.queryWithTimeout(
@@ -467,6 +474,7 @@ export class AddonDatabase {
           return {
             allowed: false,
             reason: 'Maximum concurrent device limit (2 devices) reached. Stop playback on another device or wait 10 minutes for lease expiry.',
+            retryAfterSeconds: 600,
           };
         }
 
@@ -488,7 +496,11 @@ export class AddonDatabase {
     const usageKey = `${slug}:${today}`;
     const curUsage = this.localDailyUsage.get(usageKey)?.count ?? 0;
     if (curUsage >= addon.daily_limit) {
-      return { allowed: false, reason: `Daily stream quota exceeded (${addon.daily_limit} tracks). Resets at 00:00 UTC.` };
+      return {
+        allowed: false,
+        reason: `Daily stream quota exceeded (${addon.daily_limit} tracks). Resets at 00:00 UTC.`,
+        retryAfterSeconds: retryAfterDailyReset,
+      };
     }
     this.localDailyUsage.set(usageKey, { count: curUsage + 1, date: today });
 
@@ -497,7 +509,11 @@ export class AddonDatabase {
     const ipSet = this.localIps.get(usageKey)!;
     if (!ipSet.has(clientIp)) {
       if (ipSet.size >= 15) {
-        return { allowed: false, reason: 'Daily IP diversity cap exceeded (Max 15 distinct IPs per 24 hours).' };
+        return {
+          allowed: false,
+          reason: 'Daily IP diversity cap exceeded (Max 15 distinct IPs per 24 hours).',
+          retryAfterSeconds: retryAfterDailyReset,
+        };
       }
       ipSet.add(clientIp);
     }

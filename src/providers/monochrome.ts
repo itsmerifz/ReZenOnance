@@ -7,13 +7,15 @@ type RecordValue = Record<string, unknown>;
 export class MonochromeProvider implements QobuzProvider {
   constructor(private readonly config: Config) {}
 
-  async search(query: string, _quality: Quality, _atmos: string): Promise<QobuzTrack[]> {
+  async search(query: string, quality: Quality): Promise<QobuzTrack[]> {
+    if (quality !== 'LOSSLESS') return [];
     const body = await this.request('/search/tracks', { q: query, limit: '10' });
     const items = isRecord(body) && Array.isArray(body.tracks) ? body.tracks : [];
     return items.filter(isRecord).map(toTrack).filter((track): track is QobuzTrack => track !== null);
   }
 
-  async getStream(trackId: string, _quality: Quality, _atmos: string): Promise<QobuzStream | null> {
+  async getStream(trackId: string, quality: Quality): Promise<QobuzStream | null> {
+    if (quality !== 'LOSSLESS') return null;
     const cleanId = trackId.includes(':') ? trackId.slice(trackId.lastIndexOf(':') + 1) : trackId;
     if (!/^[A-Za-z0-9_-]+$/.test(cleanId)) return null;
     const streamUrl = new URL(`/track/${encodeURIComponent(cleanId)}`, this.baseUrl()).toString();
@@ -96,9 +98,10 @@ function toTrack(raw: RecordValue): QobuzTrack | null {
   const title = raw.title;
   if ((typeof id !== 'number' && typeof id !== 'string') || typeof title !== 'string' || !title.trim()) return null;
   const artists = Array.isArray(raw.artistNames) ? raw.artistNames.filter((v): v is string => typeof v === 'string') : [];
-  const duration = typeof raw.duration === 'number' ? Math.round(raw.duration / 1000) : undefined;
+  const duration = typeof raw.duration === 'number' ? raw.duration / 1000 : undefined;
   return {
     upstreamId: String(id), title: title.trim(), artist: artists.join(', ') || undefined,
+    album: typeof raw.albumTitle === 'string' ? raw.albumTitle : undefined,
     artworkURL: typeof raw.artwork === 'string' ? raw.artwork : undefined,
     duration, format: 'flac', audioQuality: 'LOSSLESS',
   };

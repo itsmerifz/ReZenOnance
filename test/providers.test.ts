@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RacingProvider } from '../src/providers/racing.js';
+import { MonochromeProvider } from '../src/providers/monochrome.js';
 import { RemoteAddonProvider } from '../src/providers/remote-addon.js';
 import { UpstreamError } from '../src/providers/http.js';
 import type { QobuzProvider, QobuzTrack, QobuzStream, Quality } from '../src/types.js';
@@ -98,4 +99,22 @@ test('RacingProvider routes getStream using source prefix', async () => {
   const stream = await racing.getStream('srcA:track-a', 'LOSSLESS', 'auto');
   assert.ok(stream);
   assert.equal(stream.url, 'https://cdn.example/a.flac');
+});
+
+test('a scoped track miss does not try an unrelated catalogue with the same ID', async () => {
+  const missing: QobuzProvider = { async search() { return []; }, async getStream() { return null; } };
+  const other: QobuzProvider = {
+    async search() { return []; },
+    async getStream() { return { url: 'https://cdn.example/different-recording.flac' }; },
+  };
+  const racing = new RacingProvider([{ id: 'origin', name: 'Origin', provider: missing }, { id: 'other', name: 'Other', provider: other }]);
+
+  assert.equal(await racing.getStream('origin:123', 'LOSSLESS'), null);
+  assert.ok(await racing.getStream('123', 'LOSSLESS'));
+});
+
+test('the lossless-only provider does not claim a lossy request', async () => {
+  const provider = new MonochromeProvider(config);
+  assert.deepEqual(await provider.search('query', 'HIGH'), []);
+  assert.equal(await provider.getStream('123', 'LOW'), null);
 });

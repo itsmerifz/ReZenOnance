@@ -7,29 +7,16 @@ type RecordValue = Record<string, unknown>;
 export class RemoteAddonProvider implements QobuzProvider {
   constructor(private readonly config: Config, private readonly configuredBaseUrl?: string) {}
 
-  async search(query: string, quality: Quality, atmos: string): Promise<QobuzTrack[]> {
-    const body = await this.request('/search', { q: query, quality, atmos });
+  async search(query: string, quality: Quality, atmos?: string): Promise<QobuzTrack[]> {
+    const body = await this.request('/search', { q: query, quality, ...(atmos ? { atmos } : {}) });
     const items = isRecord(body) && Array.isArray(body.tracks) ? body.tracks : Array.isArray(body) ? body : [];
     return items.filter(isRecord).map(toTrack).filter((track): track is QobuzTrack => track !== null);
   }
 
-  async getStream(trackId: string, quality: Quality, atmos: string): Promise<QobuzStream | null> {
-    const cleanId = trackId.includes(':') ? trackId.slice(trackId.lastIndexOf(':') + 1) : trackId;
-    if (!/^[A-Za-z0-9_-]+$/.test(cleanId)) return null;
-    const body = await this.request(`/stream/${encodeURIComponent(cleanId)}`, { quality, atmos });
-    if (!isRecord(body) || typeof body.url !== 'string' || !/^https:\/\//i.test(body.url)) return null;
-    return {
-      url: body.url,
-      format: typeof body.format === 'string' ? body.format : (body.manifest === 'dash' ? 'dash' : undefined),
-      quality: typeof body.quality === 'string' ? body.quality : quality,
-      codec: typeof body.codec === 'string' ? body.codec : (body.format === 'flac' ? 'flac' : undefined),
-      container: typeof body.container === 'string' ? body.container : undefined,
-      manifest: body.manifest === 'hls' || body.manifest === 'dash' ? body.manifest : 'none',
-      encrypted: body.encrypted === true,
-      sampleRate: typeof body.sampleRate === 'number' ? body.sampleRate : undefined,
-      bitDepth: typeof body.bitDepth === 'number' ? body.bitDepth : undefined,
-      bitrate: typeof body.bitrate === 'number' ? body.bitrate : undefined,
-    };
+  async getStream(trackId: string, quality: Quality, atmos?: string): Promise<QobuzStream | null> {
+    if (!trackId || trackId === '.' || trackId === '..') return null;
+    const body = await this.request(`/stream/${encodeURIComponent(trackId)}`, { quality, ...(atmos ? { atmos } : {}) });
+    return toAddonStream(body);
   }
 
   private async request(path: string, params: Record<string, string>): Promise<unknown> {
@@ -52,6 +39,7 @@ export class RemoteAddonProvider implements QobuzProvider {
           signal: controller.signal,
         });
 
+        if (response.status === 404) return null;
         let body: unknown;
         try {
           body = await response.json();
@@ -91,6 +79,23 @@ export class RemoteAddonProvider implements QobuzProvider {
   }
 }
 
+export function toAddonStream(body: unknown): QobuzStream | null {
+  if (!isRecord(body) || typeof body.url !== 'string' || !/^https:\/\//i.test(body.url)) return null;
+  return {
+    url: body.url,
+    format: stringValue(body.format),
+    quality: stringValue(body.quality),
+    codec: stringValue(body.codec),
+    container: stringValue(body.container),
+    manifest: body.manifest === 'none' || body.manifest === 'hls' || body.manifest === 'dash' ? body.manifest : undefined,
+    encrypted: body.encrypted === undefined ? undefined : body.encrypted !== false,
+    sampleRate: typeof body.sampleRate === 'number' ? body.sampleRate : undefined,
+    bitDepth: typeof body.bitDepth === 'number' ? body.bitDepth : undefined,
+    bitrate: typeof body.bitrate === 'number' ? body.bitrate : undefined,
+    audioMode: stringValue(body.audioMode),
+  };
+}
+
 function toTrack(raw: RecordValue): QobuzTrack | null {
   const id = raw.id ?? raw.upstreamId ?? raw.trackId;
   const title = raw.title;
@@ -105,9 +110,12 @@ function toTrack(raw: RecordValue): QobuzTrack | null {
     artist,
     album,
     duration: typeof raw.duration === 'number' ? raw.duration : undefined,
-    artworkURL: typeof raw.artworkURL === 'string' ? raw.artworkURL : typeof raw.artwork === 'string' ? raw.artwork : undefined,
+    artworkURL: stringValue(raw.artworkURL) ?? stringValue(raw.albumArtworkURL) ?? stringValue(raw.artwork),
     format,
     audioQuality,
+    audioMode: stringValue(raw.audioMode),
+    audioModes: Array.isArray(raw.audioModes) ? raw.audioModes.filter((mode): mode is string => typeof mode === 'string') : undefined,
+    atmos: typeof raw.atmos === 'boolean' ? raw.atmos : undefined,
   };
 }
 
@@ -124,3 +132,4 @@ function delay(ms: number): Promise<void> {
 }
 
 function isRecord(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null; }
+function stringValue(value: unknown): string | undefined { return typeof value === 'string' ? value : undefined; }
